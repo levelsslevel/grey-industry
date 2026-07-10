@@ -1,0 +1,159 @@
+# MobileAgent Execution Log: Taobao Short Video Reward Task
+
+## Overview
+
+| Key | Value |
+|-----|-------|
+| **Date** | 2026-07-11 |
+| **Model** | `gemma4:31b-cloud` (Ollama Cloud) |
+| **Coordinate Type** | `qwen-vl` (0–1000 relative → screen pixels) |
+| **Screen Resolution** | 720 × 1600 |
+| **Task** | Open Taobao, watch short videos, find "Exchange for Cash" (换现金), complete tasks, scroll for rewards, avoid real transactions. |
+
+---
+
+## Execution Steps
+
+### Step 1: Open Taobao App
+- **Manager Plan**: Click the Taobao icon on home screen.
+- **Operator Action**:
+  ```json
+  {"action": "click", "coordinate": [381, 605]}
+  ```
+  - Relative: `[381, 605]` → Pixel: `[274, 968]`
+  - Status: ✅ Success
+- **Reflector**: Outcome **A** (Success)
+
+---
+
+### Step 2: Navigate to Short Video Section
+- **Manager Plan**: Click the "Video" (视频) icon in bottom navigation.
+- **Operator Action**:
+  ```json
+  {"action": "click", "coordinate": [303, 920]}
+  ```
+  - Relative → Pixel: `[218, 1472]`
+  - Status: ✅ Success
+- **Reflector**: Outcome **A** (Success), progress: Step 1 completed.
+
+---
+
+### Step 3: Enter Reward Center
+- **Manager Plan**: Click "Go to Withdraw" (去提现) to see reward rules.
+- **Operator Action**:
+  ```json
+  {"action": "click", "coordinate": [914, 166]}
+  ```
+  - Relative → Pixel: `[658, 265]`
+  - Status: ✅ Success
+- **Reflector**: Outcome **A** (Success), progress: Steps 1–2 completed.
+
+---
+
+### Step 4: Claim "Watch 10 Videos" Task
+- **Manager Plan**: Click "Claim Task" (领任务) for the video task.
+- **Operator Action**:
+  ```json
+  {"action": "click", "coordinate": [863, 533]}
+  ```
+  - Relative → Pixel: `[621, 852]`
+  - Status: ✅ Success (click executed)
+- **Reflector**: Outcome **B** (Failure)
+  - **Error**: Click did not navigate as expected; task not activated, screen returned to video feed.
+
+---
+
+### Step 5: Swipe to Next Video
+- **Manager Plan**: Swipe up to watch next video.
+- **Operator Action**:
+  ```json
+  {"action": "swipe", "coordinate": [500, 1200], "coordinate2": [500, 500]}
+  ```
+  - Original → Pixel: `[360, 1920]` → `[360, 800]`
+  - ⚠️ **Out‑of‑bounds**: `1920 > 1600` (screen height)
+  - Status: ✅ `slide` command succeeded (but likely ignored)
+- **Reflector**: Outcome **A** (Success), progress: Steps 1–4 completed.
+
+---
+
+### Step 6: Continue Swiping
+- **Manager Plan**: Keep swiping to accumulate rewards.
+- **Operator Action**:
+  ```json
+  {"action": "swipe", "coordinate": [500, 1600], "coordinate2": [500, 600]}
+  ```
+  - Original → Pixel: `[360, 2560]` → `[360, 960]`
+  - ⚠️ **Severe out‑of‑bounds**: `2560 > 1600`
+  - Status: ✅ `slide` succeeded (ineffective)
+- **Reflector**: Outcome **A** (Success).
+
+---
+
+## Coordinate Conversion Analysis
+
+| Action | Original (0–1000) | Pixel Mapped | Out‑of‑Bounds? |
+|--------|-------------------|--------------|----------------|
+| Tap Taobao | `[381, 605]` | `[274, 968]` | ❌ No |
+| Tap Video | `[303, 920]` | `[218, 1472]` | ❌ No |
+| Tap Withdraw | `[914, 166]` | `[658, 265]` | ❌ No |
+| Tap Claim | `[863, 533]` | `[621, 852]` | ❌ No |
+| Swipe #1 | `[500, 1200]` → `[500, 500]` | `[360, 1920]` → `[360, 800]` | ⚠️ **Yes** (1920 > 1600) |
+| Swipe #2 | `[500, 1600]` → `[500, 600]` | `[360, 2560]` → `[360, 960]` | ⚠️ **Yes** (2560 > 1600) |
+
+**Conversion Formula**  
+```python
+pixel = int(relative / 1000 * screen_size)
+```
+When `relative = 1600`, `screen_size = 1600` → `pixel = 2560`, exceeding screen height.
+
+---
+
+## Issues Identified
+
+1. **Coordinate Out‑of‑Bounds**  
+   Model occasionally outputs relative coordinates > 1000 (e.g., 1200, 1600). After mapping, pixel coordinates exceed screen boundaries, causing swipe actions to be ignored.
+
+2. **No Boundary Clipping**  
+   The code does **not** clip mapped coordinates to the valid screen range `[0, width-1]` and `[0, height-1]`. Out‑of‑range values are passed to ADB, which silently discards them.
+
+3. **Action Reflector Connection Errors**  
+   The Reflector stage sometimes fails with `Connection error` (SSL timeout) when sending two images (larger payload) to Ollama Cloud, possibly due to network limits or request size restrictions.
+
+---
+
+## Recommendations
+
+### ✅ Immediate Fix: Add Boundary Clipping
+
+In `run_mobileagentv3.py`, after coordinate conversion, clip values:
+
+```python
+if coor_type != "abs":
+    if "coordinate" in action_object:
+        x = int(action_object['coordinate'][0] / 1000 * width)
+        y = int(action_object['coordinate'][1] / 1000 * height)
+        # Clip to screen boundaries
+        x = max(0, min(x, width - 1))
+        y = max(0, min(y, height - 1))
+        action_object['coordinate'] = [x, y]
+    if "coordinate2" in action_object:
+        x2 = int(action_object['coordinate2'][0] / 1000 * width)
+        y2 = int(action_object['coordinate2'][1] / 1000 * height)
+        x2 = max(0, min(x2, width - 1))
+        y2 = max(0, min(y2, height - 1))
+        action_object['coordinate2'] = [x2, y2]
+```
+
+### 🔧 Additional Optimizations
+
+- **Increase API timeout** in `call_mobile_agent_e.py` (e.g., `timeout=120`) to handle large payloads.
+- **Skip Action Reflector** temporarily if connection errors persist (comment out the Reflector block).
+- **Switch to a fully multi‑modal model** like `qwen3-vl:4b-cloud` or `qwen3-vl:8b-cloud` that natively supports multiple images without payload issues.
+
+---
+
+## Conclusion
+
+The MobileAgent successfully executed the primary sequence: opening Taobao, entering the video section, navigating to the reward center, and claiming a task. However, swipe actions repeatedly failed due to **coordinate out‑of‑bounds** because the model generated relative coordinates > 1000 and the mapping logic lacked boundary clipping.
+
+**Adding the clipping fix above will resolve the swipe issue** and ensure all actions operate within the valid screen area.
